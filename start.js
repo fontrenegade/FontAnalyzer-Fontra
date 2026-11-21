@@ -15,7 +15,7 @@
 // (plugin.json). The panel is plain DOM: a plug-in can't import Fontra's own
 // modules, they are bundled.
 
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.1";
 const DEFAULT_SERVER = "https://fontanalyzer.app";
 // For development only: localStorage["fontanalyzer.server"] = "http://127.0.0.1:8001"
 const SERVER_STORAGE_KEY = "fontanalyzer.server";
@@ -44,6 +44,11 @@ export function start(editorController, pluginPath) {
   // translations, which don't know this panel.
   const tab = document.querySelector(`.sidebar-tab[data-sidebar-name="${PANEL_IDENTIFIER}"]`);
   tab?.setAttribute("data-tooltip", PANEL_TITLE);
+}
+
+// A failed Fontra upload failed while compiling when no fonts were built.
+function compileFailed(analysis) {
+  return analysis.status === "failed" && !analysis.build?.fonts?.length;
 }
 
 function serverAddress() {
@@ -241,6 +246,27 @@ const STYLES = `
     color: var(--fontra-red-color);
     opacity: 1;
   }
+  .build {
+    font-size: 0.85em;
+    line-height: 1.35;
+  }
+  .build summary {
+    cursor: pointer;
+  }
+  .build p {
+    margin: 0.5em 0 0;
+    overflow-wrap: anywhere;
+  }
+  .build ul {
+    margin: 0.4em 0 0;
+    padding-left: 1.2em;
+    max-height: 16em;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+  }
+  .build li + li {
+    margin-top: 0.25em;
+  }
   .footer {
     font-size: 0.8em;
     opacity: 0.6;
@@ -290,6 +316,11 @@ class FontAnalyzerPanel extends HTMLElement {
         </label>
         <button id="send" class="primary">Send to Font Analyzer</button>
         <div id="status" class="status" role="status" aria-live="polite"></div>
+        <details id="build" class="build" hidden>
+          <summary></summary>
+          <p id="build-fonts"></p>
+          <ul id="build-warnings"></ul>
+        </details>
         <button id="open" hidden>Open Results</button>
         <div class="footer">
           Compiled and checked on <a id="site" target="_blank" rel="noopener"></a>.
@@ -301,6 +332,7 @@ class FontAnalyzerPanel extends HTMLElement {
     this.formatSelect = root.querySelector("#format");
     this.sendButton = root.querySelector("#send");
     this.statusElement = root.querySelector("#status");
+    this.buildElement = root.querySelector("#build");
     this.openButton = root.querySelector("#open");
 
     for (const { label, value } of FORMATS) {
@@ -335,6 +367,42 @@ class FontAnalyzerPanel extends HTMLElement {
   setStatus(text, isError = false) {
     this.statusElement.textContent = text || "";
     this.statusElement.classList.toggle("error", !!isError);
+  }
+
+  // The server's build report (fonts sent as source are compiled there):
+  // analysis.build = { fonts: [names], warnings: [lines], error: text or null }
+  showBuild(build) {
+    const element = this.buildElement;
+    const fonts = build?.fonts || [];
+    const warnings = build?.warnings || [];
+    if (!fonts.length && !warnings.length) {
+      element.hidden = true;
+      return;
+    }
+    const parts = [];
+    if (fonts.length) {
+      parts.push(`Compiled ${fonts.length} font${fonts.length === 1 ? "" : "s"}`);
+    }
+    if (warnings.length) {
+      parts.push(`${warnings.length} fontmake warning${warnings.length === 1 ? "" : "s"}`);
+    }
+    element.querySelector("summary").textContent = parts.join(", ");
+    const fontsElement = element.querySelector("#build-fonts");
+    fontsElement.textContent = fonts.join(", ");
+    fontsElement.hidden = !fonts.length;
+    const list = element.querySelector("#build-warnings");
+    list.replaceChildren(
+      ...warnings.map((text) => {
+        const item = document.createElement("li");
+        item.textContent = text;
+        return item;
+      })
+    );
+    list.hidden = !warnings.length;
+    if (element.hidden && build?.error && warnings.length) {
+      element.open = true; // the warnings usually say why the build failed
+    }
+    element.hidden = false;
   }
 
   refreshUI() {
@@ -398,6 +466,8 @@ class FontAnalyzerPanel extends HTMLElement {
     const run = ++this.analysisRun;
     this.busy = true;
     this.showResultsButton(null, false);
+    this.showBuild(null);
+    this.buildElement.open = false;
     this.refreshUI();
 
     try {
@@ -461,6 +531,7 @@ class FontAnalyzerPanel extends HTMLElement {
         return;
       }
       this.setStatus(this.describe(analysis), analysis.status === "failed");
+      this.showBuild(analysis.build);
       const resultsUrl = serverAddress() + analysis.path;
       if (analysis.status === "complete") {
         this.showResultsButton(resultsUrl, true);
@@ -474,8 +545,10 @@ class FontAnalyzerPanel extends HTMLElement {
       if (analysis.status === "failed") {
         this.showResultsButton(resultsUrl, false);
         this.notify(
-          `The analysis of ${familyName} failed`,
-          "Open the results page for the details.",
+          compileFailed(analysis)
+            ? `Compiling ${familyName} failed`
+            : `Analysis of ${familyName} failed`,
+          analysis.failureReason || "Open the results page for the details.",
           resultsUrl
         );
         return;
@@ -515,12 +588,23 @@ class FontAnalyzerPanel extends HTMLElement {
       case "queuedNormal":
       case "queuedHeavy":
         return `Queued, position ${analysis.queuePosition ?? "?"}…`;
-      case "processing":
-        return "Compiling and analysing…";
+      case "processing": {
+        // One server status for both steps: the build report appears once
+        // the fonts are compiled.
+        const count = analysis.build?.fonts?.length;
+        return count
+          ? `Analysing ${count} font${count === 1 ? "" : "s"}…`
+          : "Compiling the fonts…";
+      }
       case "complete":
         return `Ready: ${analysis.errorCount ?? 0} errors, ${analysis.warningCount ?? 0} warnings.`;
-      case "failed":
-        return "The analysis failed. Open Results for the details.";
+      case "failed": {
+        const reason = analysis.failureReason || analysis.build?.error;
+        if (compileFailed(analysis)) {
+          return `Compiling the fonts failed. ${reason || "Open Results for the details."}`;
+        }
+        return `Analysis failed. ${reason || "Open Results for the details."}`;
+      }
       default:
         return "Sent.";
     }
