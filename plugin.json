@@ -1,0 +1,5 @@
+{
+  "name": "Font Analyzer – Free",
+  "init": "start.js",
+  "function": "start"
+}
