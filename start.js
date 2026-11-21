@@ -325,6 +325,7 @@ class FontAnalyzerPanel extends HTMLElement {
         <div class="footer">
           Compiled and checked on <a id="site" target="_blank" rel="noopener"></a>.
           Uploads are anonymous; only you get the results link.
+          <br>Plugin version ${PLUGIN_VERSION}
         </div>
       </div>
     `;
